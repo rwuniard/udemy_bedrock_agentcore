@@ -5,6 +5,9 @@ from crewai.agents.agent_builder.base_agent import BaseAgent
 # you can use the @before_kickoff and @after_kickoff decorators
 # https://docs.crewai.com/concepts/crews#example-crew-class-with-decorators
 
+from crewai_tools import SerperDevTool
+
+
 @CrewBase
 class VacationPlanner():
     """VacationPlanner crew"""
@@ -21,14 +24,14 @@ class VacationPlanner():
     @agent
     def researcher(self) -> Agent:
         return Agent(
-            config=self.agents_config['researcher'], # type: ignore[index]
+            config=self.agents_config['vacation_researcher'], # type: ignore[index]
             verbose=True
         )
 
     @agent
     def reporting_analyst(self) -> Agent:
         return Agent(
-            config=self.agents_config['reporting_analyst'], # type: ignore[index]
+            config=self.agents_config['itinerary_planner'], # type: ignore[index]
             verbose=True
         )
 
