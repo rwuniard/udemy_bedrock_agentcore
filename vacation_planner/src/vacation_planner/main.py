@@ -18,7 +18,7 @@ def run():
     Run the crew.
     """
     inputs = {
-        'topic': 'Charleston, SC',
+        'topic': 'Savannah, GA',
         'current_year': str(datetime.now().year)
     }
 
@@ -33,7 +33,7 @@ def train():
     Train the crew for a given number of iterations.
     """
     inputs = {
-        "topic": "AI LLMs",
+        "topic": "Savannah, GA",
         'current_year': str(datetime.now().year)
     }
     try:
@@ -57,7 +57,7 @@ def test():
     Test the crew execution and returns the results.
     """
     inputs = {
-        "topic": "AI LLMs",
+        "topic": "Savannah, GA",
         "current_year": str(datetime.now().year)
     }
 
