@@ -5,11 +5,19 @@ from crewai.agents.agent_builder.base_agent import BaseAgent
 # you can use the @before_kickoff and @after_kickoff decorators
 # https://docs.crewai.com/concepts/crews#example-crew-class-with-decorators
 
+from crewai import LLM
+
 from crewai_tools import SerperDevTool
 import os
 
-SERPER_API_KEY = os.getenv("SERPER_API_KEY")
-
+#SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+# We need to hardcoded it here so when we deploy to AgentCore, we don't need to deal with complexities of managing environment variables.
+SERPER_API_KEY = "2d2092b697fddee1070827bba5a02961cfe3c3b5"
+llm = LLM(
+    model="bedrock/us.amazon.nova-pro-v1:0",
+    temperature=0.7,
+    max_tokens=4000,
+)
 
 @CrewBase
 class VacationPlanner():
@@ -29,14 +37,16 @@ class VacationPlanner():
         return Agent(
             config=self.agents_config['vacation_researcher'], # type: ignore[index]
             verbose=True,
-            tools=[SerperDevTool(api_key=SERPER_API_KEY)]
+            tools=[SerperDevTool(api_key=SERPER_API_KEY)],
+            llm=llm
         )
 
     @agent
     def itinerary_planner(self) -> Agent:
         return Agent(
             config=self.agents_config['itinerary_planner'], # type: ignore[index]
-            verbose=True
+            verbose=True,
+            llm=llm
         )
 
     # To learn more about structured task outputs,
