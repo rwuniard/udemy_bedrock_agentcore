@@ -29,15 +29,39 @@ crewai install
 
 ## Running the Project
 
-To kickstart your crew of AI agents and begin task execution, run this from the root folder of your project:
+Run commands from the `vacation_planner` project directory. Install dependencies first if you have not already:
 
 ```bash
-$ crewai run
+uv sync
 ```
 
-This command initializes the vacation_planner Crew, assembling the agents and assigning them tasks as defined in your configuration.
+### CLI (crew)
 
-This example, unmodified, will run the create a `report.md` file with the output of a research on LLMs in the root folder.
+To kickstart your crew of AI agents and begin task execution:
+
+```bash
+crewai run
+```
+
+Or with uv (equivalent entry point):
+
+```bash
+uv run vacation_planner
+```
+
+This command initializes the vacation_planner Crew, assembling the agents and assigning them tasks as defined in your configuration. By default, `src/vacation_planner/main.py` passes a destination via the `topic` input (for example, `Charleston, SC`) and writes a Markdown report in the project folder.
+
+### Vacation Planner UI (Streamlit)
+
+A browser-based UI is available in [`streamlitui.py`](streamlitui.py). Enter a destination, run the crew, and view or download the generated vacation plan.
+
+From the `vacation_planner` directory:
+
+```bash
+uv run streamlit run streamlitui.py
+```
+
+Streamlit opens a local URL (typically `http://localhost:8501`). Ensure your `.env` file has the required API keys and AWS credentials configured before planning a trip.
 
 ## Understanding Your Crew
 
