@@ -6,6 +6,9 @@ from crewai.agents.agent_builder.base_agent import BaseAgent
 # https://docs.crewai.com/concepts/crews#example-crew-class-with-decorators
 
 from crewai_tools import SerperDevTool
+import os
+
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 
 
 @CrewBase
@@ -22,14 +25,15 @@ class VacationPlanner():
     # If you would like to add tools to your agents, you can learn more about it here:
     # https://docs.crewai.com/concepts/agents#agent-tools
     @agent
-    def researcher(self) -> Agent:
+    def vacation_researcher(self) -> Agent:
         return Agent(
             config=self.agents_config['vacation_researcher'], # type: ignore[index]
-            verbose=True
+            verbose=True,
+            tools=[SerperDevTool(api_key=SERPER_API_KEY)]
         )
 
     @agent
-    def reporting_analyst(self) -> Agent:
+    def itinerary_planner(self) -> Agent:
         return Agent(
             config=self.agents_config['itinerary_planner'], # type: ignore[index]
             verbose=True
