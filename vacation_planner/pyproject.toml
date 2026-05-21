@@ -5,6 +5,7 @@ description = "vacation_planner using crewAI"
 authors = [{ name = "Your Name", email = "you@example.com" }]
 requires-python = ">=3.10,<3.14"
 dependencies = [
+    "bedrock-agentcore>=1.7.0,<1.8.0",
     "crewai[bedrock,tools]==1.14.5",
     "crewai-tools==1.14.5",
     "streamlit>=1.57.0",

@@ -10,6 +10,12 @@ from crewai import LLM
 from crewai_tools import SerperDevTool
 import os
 
+# Integration with AgentCore
+from bedrock_agentcore.runtime import BedrockAgentCoreApp
+
+
+bedrock_agentcore_app = BedrockAgentCoreApp()
+
 #SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 # We need to hardcoded it here so when we deploy to AgentCore, we don't need to deal with complexities of managing environment variables.
 SERPER_API_KEY = "2d2092b697fddee1070827bba5a02961cfe3c3b5"
@@ -78,3 +84,31 @@ class VacationPlanner():
             verbose=True,
             # process=Process.hierarchical, # In case you wanna use that instead https://docs.crewai.com/how-to/Hierarchical/
         )
+
+# Entry point for AgentCore
+# This function to be executed by the agentcore runtime on an event (prompt) & Creates WebServer Endpoints.
+@bedrock_agentcore_app.entrypoint
+def crewai_bedrock(payload, context):
+    try:
+
+        """
+        Invoke the crew with payload.
+        """
+        topic = payload.get("topic")
+        current_year = payload.get("current_year")
+        inputs = {
+            "topic": topic,
+            "current_year": current_year
+        }
+
+        # Run the VacationPlanner crew agent with the user inputs.
+        result = VacationPlanner().crew().kickoff(inputs=inputs)
+
+        # Return the result
+        return result.raw
+    except Exception as e:
+        print(f"An error occurred while running the VacationPlanner crew: {e}")
+        return {"error": f"An error occurred while running the VacationPlanner crew: {str(e)}"}
+
+if __name__ == "__main__":
+    bedrock_agentcore_app.run()
