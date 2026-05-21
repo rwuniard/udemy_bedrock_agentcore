@@ -1,0 +1,15 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+.git
+.gitignore
+.env
+report.md
+report-*.md
+*.md
+!knowledge/**
+.streamlit
+.vscode
+AGENTS.md
+uv_build.json

@@ -1,0 +1,1 @@
+aws ecr create-repository --repository-name vacation-planner --region us-west-2
