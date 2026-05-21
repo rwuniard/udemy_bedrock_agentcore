@@ -1,0 +1,2 @@
+This is the lambda function that is created to access the Vacation Planner that runs inside the AWS Bedrock AgentCore through the vacation_planner endpoint. (Not Default endpoint).
+This lambda function will be exposed through API Gateway as an enpoint.
