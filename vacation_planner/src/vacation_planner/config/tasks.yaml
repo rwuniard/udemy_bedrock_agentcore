@@ -14,5 +14,5 @@ reporting_task:
     A fully fledged report summarizing key information about {topic},
     formatted in Markdown without using code block syntax (do not use triple backticks).
   agent: itinerary_planner
-  output_file: report-{topic}.md
+  output_file: report.md
   output_format: markdown
