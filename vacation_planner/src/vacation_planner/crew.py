@@ -16,9 +16,9 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 bedrock_agentcore_app = BedrockAgentCoreApp()
 
-#SERPER_API_KEY = os.getenv("SERPER_API_KEY")
-# We need to hardcoded it here so when we deploy to AgentCore, we don't need to deal with complexities of managing environment variables.
-SERPER_API_KEY = "aa26d7ac3f522fa5f41d439a95a84c985cc13e48"
+if not os.environ.get("SERPER_API_KEY"):
+    raise ValueError("SERPER_API_KEY environment variable is required")
+
 llm = LLM(
     model="bedrock/us.amazon.nova-pro-v1:0",
     temperature=0.7,
@@ -43,7 +43,7 @@ class VacationPlanner():
         return Agent(
             config=self.agents_config['vacation_researcher'], # type: ignore[index]
             verbose=True,
-            tools=[SerperDevTool(api_key=SERPER_API_KEY)],
+            tools=[SerperDevTool()], # SerperDevTool fetches SERPER_API_KEY from the environment variable automatically.
             llm=llm
         )
 
