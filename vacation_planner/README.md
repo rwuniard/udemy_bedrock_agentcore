@@ -81,18 +81,44 @@ uv run streamlit run streamlitui.py
 
 Streamlit opens a local URL (typically `http://localhost:8501`).
 
-## Testing with AgentCore locally
+### Vacation Planner UI (Streamlit + API Gateway)
 
-`src/vacation_planner/crew.py` defines a `BedrockAgentCoreApp` with an entry point (`crewai_bedrock`) that AgentCore invokes in production. You can test that same path locally before deploying.
+[`streamlit_api.py`](streamlit_api.py) is the **production-style UI**. It does not run the crew locally — it calls your deployed AWS stack:
 
-The entry point expects a JSON payload with:
+```
+streamlit_api.py  →  API Gateway  →  Lambda  →  AgentCore Runtime  →  Vacation Planner crew
+```
 
-| Field | Description |
-|-------|-------------|
-| `topic` | Travel destination (e.g. `"Savannah, GA"`) |
-| `current_year` | Year string (e.g. `"2026"`) |
+| Layer | Component | Role |
+|-------|-----------|------|
+| UI | [`streamlit_api.py`](streamlit_api.py) | Sends `POST {"prompt": "<destination>"}` to API Gateway |
+| API | API Gateway (`vacation_planner_resource`) | HTTP endpoint in front of Lambda |
+| Compute | [`lambda_function/lambda_function.py`](../lambda_function/lambda_function.py) | Maps `prompt` → `topic`, calls `invoke_agent_runtime` |
+| Agent | AgentCore Runtime (ECR container) | Runs `crewai_bedrock` in [`crew.py`](src/vacation_planner/crew.py) |
 
-To test without Docker, run `uv run python src/vacation_planner/crew.py` and use the same `curl` commands as in [Docker: Build, Run & Test](#docker-build-run--test) below.
+**Request flow**
+
+1. User enters a destination in Streamlit.
+2. `streamlit_api.py` posts to API Gateway.
+3. Lambda receives the event, builds payload `{"topic": "<destination>"}`, and invokes the AgentCore runtime.
+4. AgentCore runs the Vacation Planner crew (Bedrock Nova Pro + Serper search).
+5. Lambda returns `{"result": "<markdown report>", "session_id": "..."}`.
+6. Streamlit parses `body["result"]` and displays the Markdown plan.
+
+Run the API-backed UI:
+
+```bash
+uv run streamlit run streamlit_api.py
+```
+
+Update `API_URL` in `streamlit_api.py` to your API Gateway invoke URL if it differs.
+
+**Compare the two UIs**
+
+| File | Runs crew | Use case |
+|------|-----------|----------|
+| [`streamlitui.py`](streamlitui.py) | Locally (in-process) | Development / demo without AWS deploy |
+| [`streamlit_api.py`](streamlit_api.py) | Via API Gateway → Lambda → AgentCore | End-to-end AWS architecture |
 
 ## Docker: Build, Run & Test
 
@@ -185,8 +211,60 @@ A successful `/invocations` response returns the crew's Markdown report. The run
 | [`docker_build.sh`](docker_build.sh) | Build ARM64 image with git commit + `latest` tags |
 | [`docker_run.sh`](docker_run.sh) | Run container locally with AWS credentials |
 | [`test_agent.sh`](test_agent.sh) | POST test payload to `/invocations` |
+| [`aws_ecr_create.sh`](aws_ecr_create.sh) | Create ECR repository |
+| [`build_push_ecr.sh`](build_push_ecr.sh) | Build ARM64 image and push to ECR |
 
 When deployed to AgentCore, the runtime uses the container IAM role for Bedrock access instead of passing AWS credentials into `docker run`.
+
+### Push to ECR
+
+Create the repository (once):
+
+```bash
+./aws_ecr_create.sh
+```
+
+Build and push the ARM64 image:
+
+```bash
+./build_push_ecr.sh
+```
+
+## AWS deployment architecture
+
+End-to-end flow when using `streamlit_api.py`:
+
+```mermaid
+flowchart LR
+    A["streamlit_api.py"] -->|POST prompt| B["API Gateway"]
+    B --> C["Lambda\nlambda_function.py"]
+    C -->|invoke_agent_runtime| D["Bedrock AgentCore\nvacation-planner container"]
+    D --> E["CrewAI crew\ncrewai_bedrock"]
+    E -->|Markdown report| D
+    D --> C
+    C --> B
+    B --> A
+```
+
+Deploy steps (high level):
+
+1. **AgentCore** — build with [`docker_build.sh`](docker_build.sh) or [`build_push_ecr.sh`](build_push_ecr.sh), create runtime pointing at ECR image
+2. **Lambda** — deploy [`lambda_function/lambda_function.py`](../lambda_function/lambda_function.py) with permission to call `bedrock-agentcore:InvokeAgentRuntime`
+3. **API Gateway** — REST/API HTTP route integrated with Lambda (`vacation_planner_resource`)
+4. **Streamlit** — run [`streamlit_api.py`](streamlit_api.py) with `API_URL` set to your Gateway endpoint
+
+## Testing with AgentCore locally
+
+`src/vacation_planner/crew.py` defines a `BedrockAgentCoreApp` with an entry point (`crewai_bedrock`) that AgentCore invokes in production. You can test that same path locally before deploying.
+
+The entry point expects a JSON payload with:
+
+| Field | Description |
+|-------|-------------|
+| `topic` | Travel destination (e.g. `"Savannah, GA"`) |
+| `current_year` | Year string (e.g. `"2026"`) |
+
+To test without Docker, run `uv run python src/vacation_planner/crew.py` and use the same `curl` commands as in [Docker: Build, Run & Test](#docker-build-run--test).
 
 ## Understanding your crew
 
