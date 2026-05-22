@@ -18,7 +18,7 @@ bedrock_agentcore_app = BedrockAgentCoreApp()
 
 #SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 # We need to hardcoded it here so when we deploy to AgentCore, we don't need to deal with complexities of managing environment variables.
-SERPER_API_KEY = "2d2092b697fddee1070827bba5a02961cfe3c3b5"
+SERPER_API_KEY = "aa26d7ac3f522fa5f41d439a95a84c985cc13e48"
 llm = LLM(
     model="bedrock/us.amazon.nova-pro-v1:0",
     temperature=0.7,

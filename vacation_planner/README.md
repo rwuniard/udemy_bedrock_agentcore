@@ -214,29 +214,118 @@ A successful `/invocations` response returns the crew's Markdown report. The run
 
 When deployed to AgentCore, the runtime uses the container IAM role for Bedrock access instead of passing AWS credentials into `docker run`.
 
-### Observability (ADOT)
+## Adding telemetry to AWS Bedrock AgentCore (Vacation Planner)
 
-The [`Dockerfile`](Dockerfile) installs `aws-opentelemetry-distro` **only in the container image**, not in `pyproject.toml`, because CrewAI 1.14.5 pins `opentelemetry-sdk~=1.34.0` and ADOT requires a different SDK version.
+End-to-end checklist to get **GenAI traces, sessions, metrics**, and **Bedrock model invocation logs** in CloudWatch for this project.
 
-**Without ADOT** (platform metrics only): invocation latency, errors, token usage, runtime logs.
+| What you get | Where |
+|---|---|
+| Agent traces & spans (CrewAI, tools, Bedrock calls) | CloudWatch → **GenAI Observability** → **Bedrock AgentCore** |
+| Raw span data | CloudWatch → **Transaction Search** → `/aws/spans/default` |
+| Bedrock model request/response logs | CloudWatch → **Logs** → log group from model invocation logging |
 
-**With ADOT** (in the Docker image): GenAI traces in CloudWatch — per-agent/task spans, tool calls (Serper), and Bedrock LLM calls with a step-by-step timeline.
+### 1. Add OpenTelemetry to the Dockerfile
 
-One-time AWS setup:
+ADOT is installed **only in the Docker image**, not in `pyproject.toml`, because CrewAI 1.14.5 pins `opentelemetry-sdk~=1.34.0` and conflicts with ADOT in `uv sync`.
 
-1. Enable [CloudWatch Transaction Search](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/Enable-TransactionSearch.html) in your account/region.
-2. In the AgentCore console, open your runtime → **Tracing** → **Enable**.
-3. Ensure the runtime execution role can write to CloudWatch Logs and X-Ray (see [AgentCore runtime permissions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html)).
+The [`Dockerfile`](Dockerfile) already includes:
 
-After deploy, view traces under [CloudWatch GenAI Observability](https://console.aws.amazon.com/cloudwatch/home#gen-ai-observability) or **Transaction Search** (`/aws/spans/default`).
+- `aws-opentelemetry-distro==0.15.0` installed after `uv sync`
+- Container entrypoint via auto-instrumentation:
 
-**Traces work when invoking AgentCore directly, but not via Lambda?**
+```dockerfile
+CMD ["opentelemetry-instrument", "python", "-m", "vacation_planner.crew"]
+```
 
-This is a [documented AgentCore behavior](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-troubleshooting.html#troubleshoot-runtime-lambda-missing-spans). Lambda often forwards an `X-Amzn-Trace-Id` with `Sampled=0`, which tells AgentCore to skip span generation.
+AgentCore injects OTEL export settings at runtime — you do **not** need account-specific OTEL env vars in the Dockerfile.
 
-[`lambda_function/lambda_function.py`](../lambda_function/lambda_function.py) fixes this by passing `traceId=...;Sampled=1` on `invoke_agent_runtime`. **Redeploy the Lambda** after pulling that change.
+Also enable **Tracing** on your runtime: AgentCore console → your runtime → **Tracing** → **Enable**.
 
-Alternative (console): enable **Active tracing** on the Lambda function (Monitoring → AWS X-Ray). Either approach works; the code fix is explicit and does not require X-Ray on Lambda.
+Ensure the runtime **execution role** can write to CloudWatch Logs and X-Ray ([AgentCore runtime permissions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html)).
+
+### 2. Enable Transaction Search
+
+One-time per AWS account/region:
+
+1. Open [CloudWatch](https://console.aws.amazon.com/cloudwatch/)
+2. Go to **Application Signals (APM)** → **Transaction search**
+3. Choose **Enable Transaction Search**
+4. Select **Ingest OpenTelemetry spans as structured logs**
+5. Save
+
+Allow up to ~10 minutes after enabling before spans appear. See [Enable Transaction Search](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/Enable-TransactionSearch.html).
+
+### 3. Enable Model invocation logging
+
+To see **Bedrock model invocations** (inputs/outputs/metadata) in CloudWatch Logs:
+
+1. Open [Amazon Bedrock](https://console.aws.amazon.com/bedrock/) → **Configure and learn** → **Settings**
+2. Under **Model invocation logging**, choose **Edit** → enable logging
+3. In [CloudWatch](https://console.aws.amazon.com/cloudwatch/) → **Logs** → **Log groups** → **Create log group** — create the log group you want Bedrock to write to
+4. Back in Bedrock model invocation logging settings, select that log group and assign the **service role** Bedrock needs to write logs (create or select an IAM role with `logs:CreateLogStream`, `logs:PutLogEvents` on that log group)
+
+This is separate from AgentCore ADOT traces but useful alongside them for Nova Pro call details.
+
+### 4. Push the new Docker image to ECR
+
+From the `vacation_planner` directory (after AWS CLI login):
+
+```bash
+export AWS_PROFILE=rwuniard
+aws sso login --profile rwuniard
+./build_push_ecr.sh
+```
+
+This builds for **`linux/arm64`**, tags `:latest` and `:<git-commit>`, and pushes to the `vacation-planner` ECR repository.
+
+### 5. Redeploy AgentCore and update endpoints
+
+Pushing to ECR alone does **not** update the running agent. Register the new image and point traffic at it.
+
+**Option A — script (recommended):**
+
+```bash
+./deploy_agentcore.sh
+```
+
+This calls `update-agent-runtime` with the current git-commit tag, then updates the **`vacation_planner`** endpoint (Lambda uses `qualifier="vacation_planner"`, not `DEFAULT`).
+
+**Option B — console:**
+
+1. AgentCore console → your runtime → **Update hosting** (or edit container URI)
+2. Set the ECR image URI, e.g. `850652371396.dkr.ecr.us-west-2.amazonaws.com/vacation-planner:<git-commit>`
+3. Save and wait until status is **READY**
+4. **Endpoints** → select **`vacation_planner`** → edit → point to the **new runtime version**
+
+If you skip step 4, Lambda may keep hitting an old version without OpenTelemetry even though a newer image exists in ECR.
+
+See [Deploy to AgentCore (ECR + runtime update)](#deploy-to-agentcore-ecr--runtime-update) for full script details.
+
+### 6. Ensure Lambda passes `traceId` correctly
+
+When AgentCore is invoked **directly**, traces appear. When invoked via **Lambda**, spans are often missing because Lambda forwards `X-Amzn-Trace-Id` with **`Sampled=0`**, which tells AgentCore to skip span generation ([AWS troubleshooting](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-troubleshooting.html#troubleshoot-runtime-lambda-missing-spans)).
+
+[`lambda_function/lambda_function.py`](../lambda_function/lambda_function.py) passes an explicit sampled trace ID:
+
+```python
+traceId="Root=1-...;Parent=...;Sampled=1"
+```
+
+**Redeploy the Lambda** after updating this file. Alternative: enable **Active tracing** (X-Ray) on the Lambda function in the console.
+
+### 7. Test and view telemetry
+
+1. Invoke the agent (direct AgentCore test, `./test_agent.sh`, API Gateway, or [`streamlit_api.py`](streamlit_api.py))
+2. Use a **new session ID** for each test after a deploy
+3. Open [CloudWatch GenAI Observability](https://console.aws.amazon.com/cloudwatch/home#gen-ai-observability) → **Bedrock AgentCore**
+   - **Agents** — your vacation planner runtime
+   - **Sessions** — per-invocation sessions
+   - **Traces** — step-by-step span timeline (research agent, Serper, Bedrock LLM calls, etc.)
+   - **Metrics** — latency, errors, token usage
+4. For raw spans: CloudWatch → **Transaction Search** → log group **`/aws/spans/default`**
+5. For Bedrock model logs: CloudWatch → **Logs** → the log group from step 3
+
+**Without ADOT** you still get basic platform metrics; **with ADOT + the steps above** you get the full GenAI observability experience.
 
 ### Deploy to AgentCore (ECR + runtime update)
 
