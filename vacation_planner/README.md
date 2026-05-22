@@ -230,6 +230,14 @@ One-time AWS setup:
 
 After deploy, view traces under [CloudWatch GenAI Observability](https://console.aws.amazon.com/cloudwatch/home#gen-ai-observability) or **Transaction Search** (`/aws/spans/default`).
 
+**Traces work when invoking AgentCore directly, but not via Lambda?**
+
+This is a [documented AgentCore behavior](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-troubleshooting.html#troubleshoot-runtime-lambda-missing-spans). Lambda often forwards an `X-Amzn-Trace-Id` with `Sampled=0`, which tells AgentCore to skip span generation.
+
+[`lambda_function/lambda_function.py`](../lambda_function/lambda_function.py) fixes this by passing `traceId=...;Sampled=1` on `invoke_agent_runtime`. **Redeploy the Lambda** after pulling that change.
+
+Alternative (console): enable **Active tracing** on the Lambda function (Monitoring → AWS X-Ray). Either approach works; the code fix is explicit and does not require X-Ray on Lambda.
+
 ### Deploy to AgentCore (ECR + runtime update)
 
 Publishing a new image to ECR does **not** automatically update AgentCore. You need two steps:
@@ -287,8 +295,9 @@ This script:
 - Sets the container URI to `850652371396.dkr.ecr.us-west-2.amazonaws.com/vacation-planner:<git-commit>` (current `git rev-parse --short HEAD`)
 - Fetches the existing **execution role** from AgentCore (`get-agent-runtime`) — you do not hardcode it
 - Calls `update-agent-runtime`, which creates a new immutable runtime version (V2, V3, …)
+- Updates the **`vacation_planner`** endpoint to that new version (Lambda uses `qualifier="vacation_planner"`, not `DEFAULT`)
 
-Wait until the runtime status is **`READY`** in the console before testing.
+Wait until the runtime and endpoint status are **`READY`** in the console before testing.
 
 **Override defaults when needed:**
 
@@ -296,9 +305,13 @@ Wait until the runtime status is **`READY`** in the console before testing.
 # Deploy a specific image tag (must already exist in ECR)
 AGENTCORE_IMAGE_TAG=f243386 ./deploy_agentcore.sh
 
-# Different runtime or profile
-AGENT_RUNTIME_ID=vacation_planner-kqdG1OFLan AWS_PROFILE=rwuniard ./deploy_agentcore.sh
+# Different runtime, profile, or endpoint
+AGENT_RUNTIME_ID=vacation_planner-kqdG1OFLan \
+AGENT_RUNTIME_ENDPOINT=vacation_planner \
+AWS_PROFILE=rwuniard ./deploy_agentcore.sh
 ```
+
+**Why the endpoint step matters:** `update-agent-runtime` creates a new version, and `DEFAULT` follows it automatically. Your Lambda uses the custom qualifier `vacation_planner`, which stays on the old version until you update that endpoint (the deploy script does this for you).
 
 **Full redeploy workflow:**
 
@@ -312,7 +325,7 @@ aws sso login --profile rwuniard
 #### 5. Test after deploy
 
 - Use a **new session ID** when invoking — existing sessions may keep the previous container version until they expire.
-- Lambda uses the custom endpoint qualifier `vacation_planner` (not `DEFAULT`). If traffic still hits an old version, open the runtime in the AgentCore console → **Endpoints** → confirm `vacation_planner` points at the latest version.
+- Confirm the **`vacation_planner`** endpoint shows the new version under **Endpoints** in the AgentCore console (or re-run `./deploy_agentcore.sh`, which updates it automatically).
 
 #### Deploy helper scripts
 

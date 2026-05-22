@@ -1,2 +1,5 @@
-This is the lambda function that is created to access the Vacation Planner that runs inside the AWS Bedrock AgentCore through the vacation_planner endpoint. (Not Default endpoint).
-This lambda function will be exposed through API Gateway as an enpoint.
+Lambda front-end for the Vacation Planner AgentCore runtime (qualifier: vacation_planner).
+
+When invoking AgentCore, the function passes traceId with Sampled=1 so CloudWatch traces are not suppressed by Lambda's default unsampled X-Ray context.
+
+Redeploy this function after code changes for traces/API Gateway to pick them up.

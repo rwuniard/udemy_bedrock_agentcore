@@ -26,11 +26,26 @@ ROLE_ARN="$(aws bedrock-agentcore-control get-agent-runtime \
 
 echo "Execution role:  ${ROLE_ARN}"
 
-aws bedrock-agentcore-control update-agent-runtime \
+UPDATE_VERSION="$(aws bedrock-agentcore-control update-agent-runtime \
   --agent-runtime-id "${AGENT_RUNTIME_ID}" \
   --agent-runtime-artifact "{\"containerConfiguration\":{\"containerUri\":\"${CONTAINER_URI}\"}}" \
   --role-arn "${ROLE_ARN}" \
   --network-configuration '{"networkMode":"PUBLIC"}' \
+  --region "${AWS_REGION}" \
+  --query 'agentRuntimeVersion' \
+  --output text)"
+
+echo "Runtime update submitted. New version: ${UPDATE_VERSION}"
+
+# DEFAULT auto-follows the latest version; custom endpoints (e.g. vacation_planner) do not.
+AGENT_RUNTIME_ENDPOINT="${AGENT_RUNTIME_ENDPOINT:-vacation_planner}"
+
+echo "Updating endpoint: ${AGENT_RUNTIME_ENDPOINT} -> version ${UPDATE_VERSION}"
+
+aws bedrock-agentcore-control update-agent-runtime-endpoint \
+  --agent-runtime-id "${AGENT_RUNTIME_ID}" \
+  --endpoint-name "${AGENT_RUNTIME_ENDPOINT}" \
+  --agent-runtime-version "${UPDATE_VERSION}" \
   --region "${AWS_REGION}"
 
-echo "AgentCore runtime update submitted."
+echo "Endpoint update submitted."
