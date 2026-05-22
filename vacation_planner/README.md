@@ -175,7 +175,7 @@ In **terminal 1** (keep it open — the server runs in the foreground):
 ./docker_run.sh
 ```
 
-This starts a named container (`vacation-planner-local`) on port **8080** running `python -m vacation_planner.crew`.
+This starts a named container (`vacation-planner-local`) on port **8080** running the AgentCore entry point with ADOT auto-instrumentation (`opentelemetry-instrument python -m vacation_planner.crew`).
 
 If port 8080 is already in use:
 
@@ -215,6 +215,22 @@ A successful `/invocations` response returns the crew's Markdown report. The run
 | [`build_push_ecr.sh`](build_push_ecr.sh) | Build ARM64 image and push to ECR |
 
 When deployed to AgentCore, the runtime uses the container IAM role for Bedrock access instead of passing AWS credentials into `docker run`.
+
+### Observability (ADOT)
+
+The [`Dockerfile`](Dockerfile) installs `aws-opentelemetry-distro` **only in the container image**, not in `pyproject.toml`, because CrewAI 1.14.5 pins `opentelemetry-sdk~=1.34.0` and ADOT requires a different SDK version.
+
+**Without ADOT** (platform metrics only): invocation latency, errors, token usage, runtime logs.
+
+**With ADOT** (in the Docker image): GenAI traces in CloudWatch — per-agent/task spans, tool calls (Serper), and Bedrock LLM calls with a step-by-step timeline.
+
+One-time AWS setup:
+
+1. Enable [CloudWatch Transaction Search](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/Enable-TransactionSearch.html) in your account/region.
+2. In the AgentCore console, open your runtime → **Tracing** → **Enable**.
+3. Ensure the runtime execution role can write to CloudWatch Logs and X-Ray (see [AgentCore runtime permissions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html)).
+
+After deploy, view traces under [CloudWatch GenAI Observability](https://console.aws.amazon.com/cloudwatch/home#gen-ai-observability) or **Transaction Search** (`/aws/spans/default`).
 
 ### Push to ECR
 

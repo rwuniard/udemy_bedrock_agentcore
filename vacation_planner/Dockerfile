@@ -30,7 +30,8 @@ COPY knowledge ./knowledge
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev \
+    && uv pip install "aws-opentelemetry-distro==0.15.0"
 
 ENV PATH="/app/.venv/bin:$PATH"
 
@@ -39,4 +40,6 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -f http://127.0.0.1:8080/ping || exit 1
 
-CMD ["python", "-m", "vacation_planner.crew"]
+# ADOT is Docker-only (conflicts with crewai OTEL pins in pyproject.toml).
+# AgentCore injects OTEL env vars at runtime; opentelemetry-instrument exports GenAI spans to CloudWatch.
+CMD ["opentelemetry-instrument", "python", "-m", "vacation_planner.crew"]
