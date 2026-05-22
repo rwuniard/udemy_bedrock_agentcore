@@ -129,7 +129,7 @@ This project pins `bedrock-agentcore>=1.7.0,<1.8.0` to stay compatible with `cre
 Make the scripts executable (once):
 
 ```bash
-chmod +x docker_build.sh docker_run.sh test_agent.sh
+chmod +x docker_build.sh docker_run.sh test_agent.sh build_push_ecr.sh deploy_agentcore.sh aws_ecr_create.sh
 ```
 
 ### 1. Export AWS credentials
@@ -204,15 +204,13 @@ curl -X POST http://127.0.0.1:8080/invocations \
 
 A successful `/invocations` response returns the crew's Markdown report. The run may take several minutes (Bedrock LLM calls + Serper web search).
 
-### Helper scripts
+### Helper scripts (local Docker)
 
 | Script | Purpose |
 |--------|---------|
-| [`docker_build.sh`](docker_build.sh) | Build ARM64 image with git commit + `latest` tags |
+| [`docker_build.sh`](docker_build.sh) | Build ARM64 image locally (`vacation-planner:latest` + git tag) |
 | [`docker_run.sh`](docker_run.sh) | Run container locally with AWS credentials |
 | [`test_agent.sh`](test_agent.sh) | POST test payload to `/invocations` |
-| [`aws_ecr_create.sh`](aws_ecr_create.sh) | Create ECR repository |
-| [`build_push_ecr.sh`](build_push_ecr.sh) | Build ARM64 image and push to ECR |
 
 When deployed to AgentCore, the runtime uses the container IAM role for Bedrock access instead of passing AWS credentials into `docker run`.
 
@@ -232,19 +230,97 @@ One-time AWS setup:
 
 After deploy, view traces under [CloudWatch GenAI Observability](https://console.aws.amazon.com/cloudwatch/home#gen-ai-observability) or **Transaction Search** (`/aws/spans/default`).
 
-### Push to ECR
+### Deploy to AgentCore (ECR + runtime update)
 
-Create the repository (once):
+Publishing a new image to ECR does **not** automatically update AgentCore. You need two steps:
+
+1. **Push** — build the ARM64 image and upload it to ECR ([`build_push_ecr.sh`](build_push_ecr.sh))
+2. **Register** — tell AgentCore to use that image ([`deploy_agentcore.sh`](deploy_agentcore.sh))
+
+You can also update the container URI in the [AgentCore console](https://console.aws.amazon.com/bedrock-agentcore/agents) instead of running `deploy_agentcore.sh` — both call the same `UpdateAgentRuntime` API.
+
+#### 1. Authenticate with AWS
+
+`build_push_ecr.sh` and `deploy_agentcore.sh` use the AWS CLI with your profile (default: `rwuniard`):
+
+```bash
+export AWS_PROFILE=rwuniard          # or your profile name
+aws sso login --profile rwuniard     # skip if not using SSO
+aws sts get-caller-identity          # verify account/region
+```
+
+For **local Docker only** (`docker_run.sh`), you still need exported credentials — see [Export AWS credentials](#1-export-aws-credentials) above. The deploy scripts do not need `eval $(aws configure export-credentials ...)`.
+
+#### 2. Create the ECR repository (once)
 
 ```bash
 ./aws_ecr_create.sh
 ```
 
-Build and push the ARM64 image:
+#### 3. Push a new image to ECR
 
 ```bash
 ./build_push_ecr.sh
 ```
+
+This script:
+
+- Logs Docker into ECR
+- Builds the image for **`linux/arm64`** from the current directory
+- Pushes two tags to `vacation-planner`:
+  - `:latest` (mutable — always points at the most recent push)
+  - `:<git-commit>` (immutable — e.g. `:f243386`)
+
+The image is pushed directly to ECR (`--push`); it is **not** loaded into local Docker Desktop.
+
+#### 4. Update the AgentCore runtime
+
+After the push completes, register the new image with AgentCore:
+
+```bash
+./deploy_agentcore.sh
+```
+
+This script:
+
+- Uses `AWS_PROFILE` (default `rwuniard`) and region `us-west-2`
+- Sets the container URI to `850652371396.dkr.ecr.us-west-2.amazonaws.com/vacation-planner:<git-commit>` (current `git rev-parse --short HEAD`)
+- Fetches the existing **execution role** from AgentCore (`get-agent-runtime`) — you do not hardcode it
+- Calls `update-agent-runtime`, which creates a new immutable runtime version (V2, V3, …)
+
+Wait until the runtime status is **`READY`** in the console before testing.
+
+**Override defaults when needed:**
+
+```bash
+# Deploy a specific image tag (must already exist in ECR)
+AGENTCORE_IMAGE_TAG=f243386 ./deploy_agentcore.sh
+
+# Different runtime or profile
+AGENT_RUNTIME_ID=vacation_planner-kqdG1OFLan AWS_PROFILE=rwuniard ./deploy_agentcore.sh
+```
+
+**Full redeploy workflow:**
+
+```bash
+export AWS_PROFILE=rwuniard
+aws sso login --profile rwuniard
+./build_push_ecr.sh
+./deploy_agentcore.sh
+```
+
+#### 5. Test after deploy
+
+- Use a **new session ID** when invoking — existing sessions may keep the previous container version until they expire.
+- Lambda uses the custom endpoint qualifier `vacation_planner` (not `DEFAULT`). If traffic still hits an old version, open the runtime in the AgentCore console → **Endpoints** → confirm `vacation_planner` points at the latest version.
+
+#### Deploy helper scripts
+
+| Script | Purpose |
+|--------|---------|
+| [`aws_ecr_create.sh`](aws_ecr_create.sh) | Create ECR repository (once) |
+| [`build_push_ecr.sh`](build_push_ecr.sh) | Build ARM64 image and push to ECR (`:latest` + git tag) |
+| [`deploy_agentcore.sh`](deploy_agentcore.sh) | Update AgentCore runtime to use the pushed image |
 
 ## AWS deployment architecture
 
@@ -264,7 +340,7 @@ flowchart LR
 
 Deploy steps (high level):
 
-1. **AgentCore** — build with [`docker_build.sh`](docker_build.sh) or [`build_push_ecr.sh`](build_push_ecr.sh), create runtime pointing at ECR image
+1. **AgentCore** — `./build_push_ecr.sh` then `./deploy_agentcore.sh` (or update container URI in the console)
 2. **Lambda** — deploy [`lambda_function/lambda_function.py`](../lambda_function/lambda_function.py) with permission to call `bedrock-agentcore:InvokeAgentRuntime`
 3. **API Gateway** — REST/API HTTP route integrated with Lambda (`vacation_planner_resource`)
 4. **Streamlit** — run [`streamlit_api.py`](streamlit_api.py) with `API_URL` set to your Gateway endpoint
