@@ -120,9 +120,19 @@ Update `API_URL` in `streamlit_api.py` to your API Gateway invoke URL if it diff
 | [`streamlitui.py`](streamlitui.py) | Locally (in-process) | Development / demo without AWS deploy |
 | [`streamlit_api.py`](streamlit_api.py) | Via API Gateway → Lambda → AgentCore | End-to-end AWS architecture |
 
-## Docker: Build, Run & Test
+## Docker: Build, Run & Test (local Docker Desktop)
 
-Package and test the AgentCore entry point locally using [`Dockerfile`](Dockerfile) and the helper scripts in this directory.
+Use this section to build and run the **same container image as production** on your machine with **Docker Desktop** — before pushing to AWS. This is **not** the AgentCore deploy path.
+
+| Goal | Script | Where it runs |
+|------|--------|----------------|
+| Build image on your laptop | [`docker_build.sh`](docker_build.sh) | Local Docker Desktop (`--load`) |
+| **Run container locally** | [`docker_run.sh`](docker_run.sh) | Local Docker Desktop (`localhost:8080`) |
+| Test `/ping` and `/invocations` | [`test_agent.sh`](test_agent.sh) | Against the local container |
+| Push image to AWS for AgentCore | [`build_push_ecr.sh`](build_push_ecr.sh) | ECR only (does not load into Docker Desktop) |
+| Register image with AgentCore | [`deploy_agentcore.sh`](deploy_agentcore.sh) | AWS API (not local Docker) |
+
+Package and test the AgentCore entry point using [`Dockerfile`](Dockerfile) and the scripts above.
 
 This project pins `bedrock-agentcore>=1.7.0,<1.8.0` to stay compatible with `crewai[bedrock]==1.14.5`. Images are built for **`linux/arm64`** (required for AgentCore deployment).
 
@@ -155,7 +165,7 @@ echo $AWS_ACCESS_KEY_ID
 **Notes:**
 
 - Session tokens expire — re-run `aws sso login` and the `eval` command if Bedrock calls fail later.
-- `docker_run.sh` forwards these env vars into the container with `-e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY`.
+- `docker_run.sh` forwards `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `SERPER_API_KEY` into the container (loads `.env` if present).
 
 ### 2. Build the image
 
@@ -167,7 +177,9 @@ From the `vacation_planner` directory:
 
 This runs `docker buildx build --platform linux/arm64` and tags the image as `vacation-planner:latest` and `vacation-planner:<git-commit>`.
 
-### 3. Run the container
+### 3. Run the container locally (`docker_run.sh`)
+
+[`docker_run.sh`](docker_run.sh) starts the agent in **Docker Desktop on your machine** — not on AgentCore. Use it to mimic production (`/ping`, `/invocations`) before you push to ECR.
 
 In **terminal 1** (keep it open — the server runs in the foreground):
 
@@ -175,7 +187,18 @@ In **terminal 1** (keep it open — the server runs in the foreground):
 ./docker_run.sh
 ```
 
-This starts a named container (`vacation-planner-local`) on port **8080** running the AgentCore entry point with ADOT auto-instrumentation (`opentelemetry-instrument python -m vacation_planner.crew`).
+This runs `docker run` against `vacation-planner:latest` and:
+
+- Binds **port 8080** on `localhost` (same ports AgentCore expects)
+- Loads **`vacation_planner/.env`** if present (`SERPER_API_KEY`, etc.)
+- Passes **AWS credentials** and **`SERPER_API_KEY`** from your shell into the container
+- Names the container `vacation-planner-local` (remove with `docker rm -f vacation-planner-local` if needed)
+
+Runs `python -m vacation_planner.crew` with **`OTEL_SDK_DISABLED=true`** so ADOT does not try to export traces to `localhost:4317` (there is no OTLP collector in local Docker). The **production** image CMD still uses `opentelemetry-instrument`; on AgentCore, AWS injects OTEL export settings for CloudWatch.
+
+Ensure `SERPER_API_KEY` is in `.env` or exported before running `./docker_run.sh`. On AgentCore you set that on the runtime; locally you pass it via this script.
+
+**If you still see `Failed to export traces to localhost:4317`:** rebuild the image after pulling script changes, or confirm `docker_run.sh` overrides the image CMD (do not run `docker run vacation-planner:latest` without that script).
 
 If port 8080 is already in use:
 
@@ -204,15 +227,17 @@ curl -X POST http://127.0.0.1:8080/invocations \
 
 A successful `/invocations` response returns the crew's Markdown report. The run may take several minutes (Bedrock LLM calls + Serper web search).
 
-### Helper scripts (local Docker)
+### Helper scripts (local Docker Desktop vs AWS deploy)
 
-| Script | Purpose |
-|--------|---------|
-| [`docker_build.sh`](docker_build.sh) | Build ARM64 image locally (`vacation-planner:latest` + git tag) |
-| [`docker_run.sh`](docker_run.sh) | Run container locally with AWS credentials |
-| [`test_agent.sh`](test_agent.sh) | POST test payload to `/invocations` |
+| Script | Local Docker Desktop? | Purpose |
+|--------|----------------------|---------|
+| [`docker_build.sh`](docker_build.sh) | **Yes** — loads image into Docker Desktop | Build ARM64 image (`vacation-planner:latest` + git tag) |
+| [`docker_run.sh`](docker_run.sh) | **Yes** — runs on `localhost:8080` | Start the agent container locally; forwards AWS creds + `SERPER_API_KEY` from `.env` |
+| [`test_agent.sh`](test_agent.sh) | **Yes** — calls local `127.0.0.1:8080` | POST test payload to `/invocations` |
+| [`build_push_ecr.sh`](build_push_ecr.sh) | **No** — pushes straight to ECR | Production image upload (see [Deploy to AgentCore](#deploy-to-agentcore-ecr--runtime-update)) |
+| [`deploy_agentcore.sh`](deploy_agentcore.sh) | **No** — updates AgentCore in AWS | Point the cloud runtime at the ECR image |
 
-When deployed to AgentCore, the runtime uses the container IAM role for Bedrock access instead of passing AWS credentials into `docker run`.
+When the agent runs on **AgentCore**, the runtime uses its **IAM execution role** for Bedrock and **runtime environment variables** for `SERPER_API_KEY` — not your laptop credentials or `docker run`.
 
 ## Adding telemetry to AWS Bedrock AgentCore (Vacation Planner)
 
@@ -385,6 +410,9 @@ This script:
 - Fetches the existing **execution role** from AgentCore (`get-agent-runtime`) — you do not hardcode it
 - Calls `update-agent-runtime`, which creates a new immutable runtime version (V2, V3, …)
 - Updates the **`vacation_planner`** endpoint to that new version (Lambda uses `qualifier="vacation_planner"`, not `DEFAULT`)
+- **Preserves existing runtime environment variables** (e.g. `SERPER_API_KEY`) from the current version — `update-agent-runtime` replaces the full config snapshot, so omitting env vars would drop them
+
+Set or rotate `SERPER_API_KEY` once with [`update_serpapi_key.sh`](update_serpapi_key.sh) (reads from `.env` or your shell). After that, normal `./deploy_agentcore.sh` runs keep it.
 
 Wait until the runtime and endpoint status are **`READY`** in the console before testing.
 
@@ -423,6 +451,7 @@ aws sso login --profile rwuniard
 | [`aws_ecr_create.sh`](aws_ecr_create.sh) | Create ECR repository (once) |
 | [`build_push_ecr.sh`](build_push_ecr.sh) | Build ARM64 image and push to ECR (`:latest` + git tag) |
 | [`deploy_agentcore.sh`](deploy_agentcore.sh) | Update AgentCore runtime to use the pushed image |
+| [`update_serpapi_key.sh`](update_serpapi_key.sh) | Set or rotate `SERPER_API_KEY` on the AgentCore runtime |
 
 ## AWS deployment architecture
 
