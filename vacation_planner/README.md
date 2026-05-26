@@ -81,12 +81,12 @@ uv run streamlit run streamlitui.py
 
 Streamlit opens a local URL (typically `http://localhost:8501`).
 
-### Vacation Planner UI (Streamlit + API Gateway)
+### Vacation Planner UI (Streamlit + API Gateway + Lambda + AgentCore + AWS Bedrock)
 
 [`streamlit_api.py`](streamlit_api.py) is the **production-style UI**. It does not run the crew locally — it calls your deployed AWS stack:
 
 ```
-streamlit_api.py  →  API Gateway  →  Lambda  →  AgentCore Runtime  →  Vacation Planner crew
+streamlit_api.py  →  API Gateway  →  Lambda  →  AgentCore Runtime  →  Vacation Planner crew → AWS Bedrock (model)
 ```
 
 | Layer | Component | Role |
@@ -130,7 +130,7 @@ Use this section to build and run the **same container image as production** on 
 | **Run container locally** | [`docker_run.sh`](docker_run.sh) | Local Docker Desktop (`localhost:8080`) |
 | Test `/ping` and `/invocations` | [`test_agent.sh`](test_agent.sh) | Against the local container |
 | Push image to AWS for AgentCore | [`build_push_ecr.sh`](build_push_ecr.sh) | ECR only (does not load into Docker Desktop) |
-| Register image with AgentCore | [`deploy_agentcore.sh`](deploy_agentcore.sh) | AWS API (not local Docker) |
+| Register image with AgentCore | [`deploy_agentcore.sh`](deploy_agentcore.sh) | AWS API + AgentCore (not local Docker) |
 
 Package and test the AgentCore entry point using [`Dockerfile`](Dockerfile) and the scripts above.
 
@@ -148,7 +148,7 @@ The container needs AWS credentials to call Bedrock. From the `vacation_planner`
 
 ```bash
 export AWS_PROFILE=rwuniard                    # use your profile name
-aws sso login --profile rwuniard               # skip if not using SSO
+aws login --profile rwuniard                   # refresh credentials if needed
 
 eval $(aws configure export-credentials --profile rwuniard --format env)
 ```
@@ -164,7 +164,7 @@ echo $AWS_ACCESS_KEY_ID
 
 **Notes:**
 
-- Session tokens expire — re-run `aws sso login` and the `eval` command if Bedrock calls fail later.
+- Session tokens expire — re-run `aws login` and the `eval` command if Bedrock calls fail later.
 - `docker_run.sh` forwards `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `SERPER_API_KEY` into the container (loads `.env` if present).
 
 ### 2. Build the image
@@ -254,7 +254,7 @@ Publishing a new image to ECR does **not** update the running agent. AgentCore u
 | **Rotate Serper key only** (same image) | [`update_serpapi_key.sh`](update_serpapi_key.sh) only | `build_push_ecr.sh` |
 | **Local test before AWS** | [`docker_build.sh`](docker_build.sh) → [`docker_run.sh`](docker_run.sh) → [`test_agent.sh`](test_agent.sh) | ECR / AgentCore scripts |
 
-**Full redeploy workflow** (after `aws sso login`):
+**Full redeploy workflow** (after `aws login`):
 
 ```bash
 export AWS_PROFILE=rwuniard    # your profile
@@ -286,9 +286,11 @@ Production traffic (API Gateway → Lambda) uses **`vacation_planner` only**. If
 
 ```bash
 export AWS_PROFILE=rwuniard
-aws sso login --profile rwuniard
+aws login --profile rwuniard
 aws sts get-caller-identity
 ```
+
+If you use **IAM Identity Center (SSO)** instead, run `aws sso login --profile rwuniard`.
 
 For **local Docker** (`docker_run.sh`), also export credentials into the shell — see [Export AWS credentials](#1-export-aws-credentials). Deploy scripts do not need `eval $(aws configure export-credentials ...)`.
 
@@ -428,7 +430,7 @@ From the `vacation_planner` directory (after AWS CLI login):
 
 ```bash
 export AWS_PROFILE=rwuniard
-aws sso login --profile rwuniard
+aws login --profile rwuniard
 ./build_push_ecr.sh
 ```
 
