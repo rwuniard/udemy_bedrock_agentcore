@@ -63,6 +63,9 @@ UPDATE_VERSION="$(aws bedrock-agentcore-control update-agent-runtime \
 
 echo "Runtime update submitted. New version: ${UPDATE_VERSION}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"${SCRIPT_DIR}/wait_agent_runtime_ready.sh" "${AGENT_RUNTIME_ID}" "${UPDATE_VERSION}"
+
 # DEFAULT auto-follows the latest version; custom endpoints (e.g. vacation_planner) do not.
 AGENT_RUNTIME_ENDPOINT="${AGENT_RUNTIME_ENDPOINT:-vacation_planner}"
 

@@ -139,7 +139,7 @@ This project pins `bedrock-agentcore>=1.7.0,<1.8.0` to stay compatible with `cre
 Make the scripts executable (once):
 
 ```bash
-chmod +x docker_build.sh docker_run.sh test_agent.sh build_push_ecr.sh deploy_agentcore.sh aws_ecr_create.sh
+chmod +x docker_build.sh docker_run.sh test_agent.sh build_push_ecr.sh deploy_agentcore.sh wait_agent_runtime_ready.sh aws_ecr_create.sh update_serpapi_key.sh
 ```
 
 ### 1. Export AWS credentials
@@ -234,10 +234,141 @@ A successful `/invocations` response returns the crew's Markdown report. The run
 | [`docker_build.sh`](docker_build.sh) | **Yes** — loads image into Docker Desktop | Build ARM64 image (`vacation-planner:latest` + git tag) |
 | [`docker_run.sh`](docker_run.sh) | **Yes** — runs on `localhost:8080` | Start the agent container locally; forwards AWS creds + `SERPER_API_KEY` from `.env` |
 | [`test_agent.sh`](test_agent.sh) | **Yes** — calls local `127.0.0.1:8080` | POST test payload to `/invocations` |
-| [`build_push_ecr.sh`](build_push_ecr.sh) | **No** — pushes straight to ECR | Production image upload (see [Deploy to AgentCore](#deploy-to-agentcore-ecr--runtime-update)) |
-| [`deploy_agentcore.sh`](deploy_agentcore.sh) | **No** — updates AgentCore in AWS | Point the cloud runtime at the ECR image |
+| [`build_push_ecr.sh`](build_push_ecr.sh) | **No** — pushes straight to ECR | Production image upload (see [Deploy to AgentCore](#deploy-to-agentcore)) |
+| [`deploy_agentcore.sh`](deploy_agentcore.sh) | **No** — updates AgentCore in AWS | Register ECR image, wait for READY, pin `vacation_planner` endpoint |
+| [`wait_agent_runtime_ready.sh`](wait_agent_runtime_ready.sh) | **No** | Called by deploy / Serper scripts; polls until a runtime version is `READY` |
+| [`update_serpapi_key.sh`](update_serpapi_key.sh) | **No** | Set or rotate `SERPER_API_KEY` on the runtime (not part of every image deploy) |
 
 When the agent runs on **AgentCore**, the runtime uses its **IAM execution role** for Bedrock and **runtime environment variables** for `SERPER_API_KEY` — not your laptop credentials or `docker run`.
+
+## Deploy to AgentCore
+
+Publishing a new image to ECR does **not** update the running agent. AgentCore uses **versioned** runtimes and **named endpoints** that point at a specific version.
+
+### Execution order (which script when)
+
+| When | Run | Do not run |
+|------|-----|------------|
+| **Normal code deploy** (new image) | 1. [`build_push_ecr.sh`](build_push_ecr.sh) → 2. [`deploy_agentcore.sh`](deploy_agentcore.sh) | `update_serpapi_key.sh` (unless rotating the key) |
+| **First time / missing Serper key on runtime** | [`update_serpapi_key.sh`](update_serpapi_key.sh) once (reads `.env`) | Not required before every `build_push_ecr` |
+| **Rotate Serper key only** (same image) | [`update_serpapi_key.sh`](update_serpapi_key.sh) only | `build_push_ecr.sh` |
+| **Local test before AWS** | [`docker_build.sh`](docker_build.sh) → [`docker_run.sh`](docker_run.sh) → [`test_agent.sh`](test_agent.sh) | ECR / AgentCore scripts |
+
+**Full redeploy workflow** (after `aws sso login`):
+
+```bash
+export AWS_PROFILE=rwuniard    # your profile
+./build_push_ecr.sh
+./deploy_agentcore.sh
+```
+
+`deploy_agentcore.sh` will:
+
+1. Call `update-agent-runtime` with `vacation-planner:<git-commit>` from ECR
+2. **Preserve** existing runtime env vars (e.g. `SERPER_API_KEY`) on the new version
+3. **Wait** until that version is `READY` ([`wait_agent_runtime_ready.sh`](wait_agent_runtime_ready.sh))
+4. Call `update-agent-runtime-endpoint` for the **`vacation_planner`** endpoint
+
+### Endpoints: `DEFAULT` vs `vacation_planner`
+
+Your runtime has two endpoints (AgentCore console → **Endpoints**). They are **separate aliases** on the same runtime — neither calls the other.
+
+| Endpoint | Updated by deploy scripts? | Used by |
+|----------|----------------------------|---------|
+| **`DEFAULT`** | No explicit step (often tracks the latest version after `update-agent-runtime`) | Console tests, invokes with `DEFAULT` qualifier |
+| **`vacation_planner`** | **Yes** — `deploy_agentcore.sh` / `update_serpapi_key.sh` | **Lambda** — `qualifier="vacation_planner"` in [`lambda_function.py`](../lambda_function/lambda_function.py) |
+
+Production traffic (API Gateway → Lambda) uses **`vacation_planner` only**. If you deploy a new image but skip the endpoint update, `DEFAULT` may show the new version while Lambda still hits an old one.
+
+### Authenticate with AWS
+
+`build_push_ecr.sh` and `deploy_agentcore.sh` use the AWS CLI with your profile (default: `rwuniard`):
+
+```bash
+export AWS_PROFILE=rwuniard
+aws sso login --profile rwuniard
+aws sts get-caller-identity
+```
+
+For **local Docker** (`docker_run.sh`), also export credentials into the shell — see [Export AWS credentials](#1-export-aws-credentials). Deploy scripts do not need `eval $(aws configure export-credentials ...)`.
+
+### Create ECR repository (once)
+
+```bash
+./aws_ecr_create.sh
+```
+
+### Push image to ECR
+
+```bash
+./build_push_ecr.sh
+```
+
+- Builds **`linux/arm64`**, pushes `:latest` and `:<git-commit>` to `vacation-planner`
+- Pushes directly to ECR (`--push`); does **not** load into Docker Desktop
+
+### Register runtime and update endpoint
+
+```bash
+./deploy_agentcore.sh
+```
+
+Details:
+
+- Container URI: `<account>.dkr.ecr.us-west-2.amazonaws.com/vacation-planner:<git-commit>` (override with `AGENTCORE_IMAGE_TAG=...`)
+- Fetches **execution role** from `get-agent-runtime` (do not hardcode your CLI profile name)
+- **`update-agent-runtime`** creates a new immutable version; omitting `--environment-variables` would wipe secrets — the script re-applies them
+- **`wait_agent_runtime_ready.sh`** avoids `ConflictException: Agent version N must be in READY status. Current status: UPDATING`
+- **`update-agent-runtime-endpoint`** pins `vacation_planner` (override with `AGENT_RUNTIME_ENDPOINT=...`)
+
+**Serper API key:** set once with [`update_serpapi_key.sh`](update_serpapi_key.sh). Later `./deploy_agentcore.sh` runs copy `SERPER_API_KEY` from the current runtime. To override during deploy: `SERPER_API_KEY=... ./deploy_agentcore.sh`.
+
+**Overrides:**
+
+```bash
+AGENTCORE_IMAGE_TAG=f243386 ./deploy_agentcore.sh
+
+AGENT_RUNTIME_ID=vacation_planner-kqdG1OFLan \
+AGENT_RUNTIME_ENDPOINT=vacation_planner \
+AWS_PROFILE=rwuniard ./deploy_agentcore.sh
+```
+
+### Test after deploy
+
+- Wait until the **`vacation_planner`** endpoint is **Ready** in the console
+- Use a **new session ID** per test — old sessions may keep a previous container version
+- Invoke via `./test_agent.sh` (local), AgentCore test, API Gateway, or [`streamlit_api.py`](streamlit_api.py)
+
+### Deploy troubleshooting
+
+| Error | Cause | Fix |
+|-------|--------|-----|
+| `ConflictException` … `must be in READY status` … `UPDATING` | Endpoint updated before the new runtime version finished | Re-run `./deploy_agentcore.sh` (now waits for READY), or wait in the console then run `update-agent-runtime-endpoint` manually for that version |
+| `SERPER_API_KEY` missing after deploy | Older deploy omitted env vars on `update-agent-runtime` | Run `./update_serpapi_key.sh`, then deploy again |
+| Lambda works in console but not via API | `vacation_planner` endpoint still on old version | Re-run `./deploy_agentcore.sh` or update endpoint in console |
+| `Failed to export traces to localhost:4317` (local Docker) | ADOT has no OTLP collector locally | Use [`docker_run.sh`](docker_run.sh) (disables OTEL for local runs); traces appear on AgentCore after deploy |
+
+**Endpoint-only fix** (if runtime version N is already `READY` but the script failed on the endpoint step):
+
+```bash
+aws bedrock-agentcore-control update-agent-runtime-endpoint \
+  --agent-runtime-id vacation_planner-kqdG1OFLan \
+  --endpoint-name vacation_planner \
+  --agent-runtime-version N \
+  --region us-west-2
+```
+
+### Deploy helper scripts
+
+| Script | Purpose |
+|--------|---------|
+| [`aws_ecr_create.sh`](aws_ecr_create.sh) | Create ECR repository (once) |
+| [`build_push_ecr.sh`](build_push_ecr.sh) | Build ARM64 image and push to ECR |
+| [`deploy_agentcore.sh`](deploy_agentcore.sh) | New runtime version + wait READY + update `vacation_planner` endpoint |
+| [`wait_agent_runtime_ready.sh`](wait_agent_runtime_ready.sh) | Poll until a runtime version status is `READY` |
+| [`update_serpapi_key.sh`](update_serpapi_key.sh) | New runtime version with updated `SERPER_API_KEY` + endpoint pin |
+
+You can also update the container URI in the [AgentCore console](https://console.aws.amazon.com/bedrock-agentcore/agents) — same APIs as the scripts.
 
 ## Adding telemetry to AWS Bedrock AgentCore (Vacation Planner)
 
@@ -305,26 +436,7 @@ This builds for **`linux/arm64`**, tags `:latest` and `:<git-commit>`, and pushe
 
 ### 5. Redeploy AgentCore and update endpoints
 
-Pushing to ECR alone does **not** update the running agent. Register the new image and point traffic at it.
-
-**Option A — script (recommended):**
-
-```bash
-./deploy_agentcore.sh
-```
-
-This calls `update-agent-runtime` with the current git-commit tag, then updates the **`vacation_planner`** endpoint (Lambda uses `qualifier="vacation_planner"`, not `DEFAULT`).
-
-**Option B — console:**
-
-1. AgentCore console → your runtime → **Update hosting** (or edit container URI)
-2. Set the ECR image URI, e.g. `850652371396.dkr.ecr.us-west-2.amazonaws.com/vacation-planner:<git-commit>`
-3. Save and wait until status is **READY**
-4. **Endpoints** → select **`vacation_planner`** → edit → point to the **new runtime version**
-
-If you skip step 4, Lambda may keep hitting an old version without OpenTelemetry even though a newer image exists in ECR.
-
-See [Deploy to AgentCore (ECR + runtime update)](#deploy-to-agentcore-ecr--runtime-update) for full script details.
+After pushing a new image with `./build_push_ecr.sh`, run `./deploy_agentcore.sh` (waits for `READY`, then pins the **`vacation_planner`** endpoint). See [Deploy to AgentCore](#deploy-to-agentcore) for execution order, endpoints, and troubleshooting.
 
 ### 6. Ensure Lambda passes `traceId` correctly
 
@@ -352,107 +464,6 @@ traceId="Root=1-...;Parent=...;Sampled=1"
 
 **Without ADOT** you still get basic platform metrics; **with ADOT + the steps above** you get the full GenAI observability experience.
 
-### Deploy to AgentCore (ECR + runtime update)
-
-Publishing a new image to ECR does **not** automatically update AgentCore. You need two steps:
-
-1. **Push** — build the ARM64 image and upload it to ECR ([`build_push_ecr.sh`](build_push_ecr.sh))
-2. **Register** — tell AgentCore to use that image ([`deploy_agentcore.sh`](deploy_agentcore.sh))
-
-You can also update the container URI in the [AgentCore console](https://console.aws.amazon.com/bedrock-agentcore/agents) instead of running `deploy_agentcore.sh` — both call the same `UpdateAgentRuntime` API.
-
-#### 1. Authenticate with AWS
-
-`build_push_ecr.sh` and `deploy_agentcore.sh` use the AWS CLI with your profile (default: `rwuniard`):
-
-```bash
-export AWS_PROFILE=rwuniard          # or your profile name
-aws sso login --profile rwuniard     # skip if not using SSO
-aws sts get-caller-identity          # verify account/region
-```
-
-For **local Docker only** (`docker_run.sh`), you still need exported credentials — see [Export AWS credentials](#1-export-aws-credentials) above. The deploy scripts do not need `eval $(aws configure export-credentials ...)`.
-
-#### 2. Create the ECR repository (once)
-
-```bash
-./aws_ecr_create.sh
-```
-
-#### 3. Push a new image to ECR
-
-```bash
-./build_push_ecr.sh
-```
-
-This script:
-
-- Logs Docker into ECR
-- Builds the image for **`linux/arm64`** from the current directory
-- Pushes two tags to `vacation-planner`:
-  - `:latest` (mutable — always points at the most recent push)
-  - `:<git-commit>` (immutable — e.g. `:f243386`)
-
-The image is pushed directly to ECR (`--push`); it is **not** loaded into local Docker Desktop.
-
-#### 4. Update the AgentCore runtime
-
-After the push completes, register the new image with AgentCore:
-
-```bash
-./deploy_agentcore.sh
-```
-
-This script:
-
-- Uses `AWS_PROFILE` (default `rwuniard`) and region `us-west-2`
-- Sets the container URI to `850652371396.dkr.ecr.us-west-2.amazonaws.com/vacation-planner:<git-commit>` (current `git rev-parse --short HEAD`)
-- Fetches the existing **execution role** from AgentCore (`get-agent-runtime`) — you do not hardcode it
-- Calls `update-agent-runtime`, which creates a new immutable runtime version (V2, V3, …)
-- Updates the **`vacation_planner`** endpoint to that new version (Lambda uses `qualifier="vacation_planner"`, not `DEFAULT`)
-- **Preserves existing runtime environment variables** (e.g. `SERPER_API_KEY`) from the current version — `update-agent-runtime` replaces the full config snapshot, so omitting env vars would drop them
-
-Set or rotate `SERPER_API_KEY` once with [`update_serpapi_key.sh`](update_serpapi_key.sh) (reads from `.env` or your shell). After that, normal `./deploy_agentcore.sh` runs keep it.
-
-Wait until the runtime and endpoint status are **`READY`** in the console before testing.
-
-**Override defaults when needed:**
-
-```bash
-# Deploy a specific image tag (must already exist in ECR)
-AGENTCORE_IMAGE_TAG=f243386 ./deploy_agentcore.sh
-
-# Different runtime, profile, or endpoint
-AGENT_RUNTIME_ID=vacation_planner-kqdG1OFLan \
-AGENT_RUNTIME_ENDPOINT=vacation_planner \
-AWS_PROFILE=rwuniard ./deploy_agentcore.sh
-```
-
-**Why the endpoint step matters:** `update-agent-runtime` creates a new version, and `DEFAULT` follows it automatically. Your Lambda uses the custom qualifier `vacation_planner`, which stays on the old version until you update that endpoint (the deploy script does this for you).
-
-**Full redeploy workflow:**
-
-```bash
-export AWS_PROFILE=rwuniard
-aws sso login --profile rwuniard
-./build_push_ecr.sh
-./deploy_agentcore.sh
-```
-
-#### 5. Test after deploy
-
-- Use a **new session ID** when invoking — existing sessions may keep the previous container version until they expire.
-- Confirm the **`vacation_planner`** endpoint shows the new version under **Endpoints** in the AgentCore console (or re-run `./deploy_agentcore.sh`, which updates it automatically).
-
-#### Deploy helper scripts
-
-| Script | Purpose |
-|--------|---------|
-| [`aws_ecr_create.sh`](aws_ecr_create.sh) | Create ECR repository (once) |
-| [`build_push_ecr.sh`](build_push_ecr.sh) | Build ARM64 image and push to ECR (`:latest` + git tag) |
-| [`deploy_agentcore.sh`](deploy_agentcore.sh) | Update AgentCore runtime to use the pushed image |
-| [`update_serpapi_key.sh`](update_serpapi_key.sh) | Set or rotate `SERPER_API_KEY` on the AgentCore runtime |
-
 ## AWS deployment architecture
 
 End-to-end flow when using `streamlit_api.py`:
@@ -471,7 +482,7 @@ flowchart LR
 
 Deploy steps (high level):
 
-1. **AgentCore** — `./build_push_ecr.sh` then `./deploy_agentcore.sh` (or update container URI in the console)
+1. **AgentCore** — see [Deploy to AgentCore](#deploy-to-agentcore): `./build_push_ecr.sh` then `./deploy_agentcore.sh`
 2. **Lambda** — deploy [`lambda_function/lambda_function.py`](../lambda_function/lambda_function.py) with permission to call `bedrock-agentcore:InvokeAgentRuntime`
 3. **API Gateway** — REST/API HTTP route integrated with Lambda (`vacation_planner_resource`)
 4. **Streamlit** — run [`streamlit_api.py`](streamlit_api.py) with `API_URL` set to your Gateway endpoint

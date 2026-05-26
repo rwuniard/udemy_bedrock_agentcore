@@ -53,6 +53,9 @@ UPDATE_VERSION="$(aws bedrock-agentcore-control update-agent-runtime \
   --query 'agentRuntimeVersion' \
   --output text)"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"${SCRIPT_DIR}/wait_agent_runtime_ready.sh" "${AGENT_RUNTIME_ID}" "${UPDATE_VERSION}"
+
 AGENT_RUNTIME_ENDPOINT="${AGENT_RUNTIME_ENDPOINT:-vacation_planner}"
 
 aws bedrock-agentcore-control update-agent-runtime-endpoint \
