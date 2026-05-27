@@ -1,6 +1,8 @@
-# VacationPlanner Crew
+# VacationPlanner Crew (Project 1)
 
 A multi-agent vacation planning app built with [crewAI](https://crewai.com). Two agents—a **Vacation Researcher** and an **Itinerary Planner**—collaborate to research a destination and produce a Markdown travel report. The project uses **Amazon Bedrock** (Nova Pro) for LLM inference, **Serper** for web search, and includes an optional **Amazon Bedrock AgentCore** entry point for deployment.
+
+**Related — Project 2:** [AgentCore Gateway + MCP test client](../test_agent_core_gateways/README.md) — gateway with JWT (Cognito) inbound auth, MCP `tools/list` and `tools/call`, Lambda → DynamoDB travel packages. See also the [repo overview](../README.md).
 
 ## Prerequisites
 
@@ -525,3 +527,4 @@ Managed in `pyproject.toml`:
 - [crewAI documentation](https://docs.crewai.com)
 - [crewAI GitHub](https://github.com/joaomdmoura/crewai)
 - [crewAI Discord](https://discord.com/invite/X4JWnZnxPb)
+- [AgentCore Gateway (Project 2)](../test_agent_core_gateways/README.md)
