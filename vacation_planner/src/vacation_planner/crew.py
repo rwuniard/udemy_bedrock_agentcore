@@ -66,9 +66,13 @@ class VacationPlanner():
 
     @task
     def reporting_task(self) -> Task:
+        # This doesn't work with concurrent execution
+        # return Task(
+        #     config=self.tasks_config['reporting_task'], # type: ignore[index]
+        #     output_file='report.md'
+        # )
         return Task(
-            config=self.tasks_config['reporting_task'], # type: ignore[index]
-            output_file='report.md'
+            config=self.tasks_config['reporting_task'],
         )
 
     @crew
