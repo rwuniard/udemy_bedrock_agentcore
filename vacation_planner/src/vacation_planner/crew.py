@@ -8,6 +8,7 @@ from crewai.agents.agent_builder.base_agent import BaseAgent
 from crewai import LLM
 
 from crewai_tools import SerperDevTool
+from vacation_planner.dynamo_tool import get_travel_packages
 import os
 
 # Integration with AgentCore
@@ -43,7 +44,7 @@ class VacationPlanner():
         return Agent(
             config=self.agents_config['vacation_researcher'], # type: ignore[index]
             verbose=True,
-            tools=[SerperDevTool()], # SerperDevTool fetches SERPER_API_KEY from the environment variable automatically.
+            tools=[SerperDevTool(), get_travel_packages], # SerperDevTool fetches SERPER_API_KEY from the environment variable automatically.
             llm=llm
         )
 
