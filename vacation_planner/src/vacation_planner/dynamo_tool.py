@@ -10,18 +10,23 @@ load_dotenv()
 
 CLIENT_ID = os.getenv("COGNITO_CLIENT_ID")
 CLIENT_SECRET = os.getenv("COGNITO_CLIENT_SECRET")
-TOKEN_URL = "https://us-west-2ojx6gvssl.auth.us-west-2.amazoncognito.com/oauth2/token"
+TOKEN_URL = os.getenv("TOKEN_URL")
 GATEWAY_URL = os.getenv("GATEWAY_URL")
 
 def fetch_access_token(client_id, client_secret, token_url):
-  response = requests.post(
-    token_url,
-    data="grant_type=client_credentials&client_id={client_id}&client_secret={client_secret}".format(client_id=client_id, client_secret=client_secret),
-    headers={'Content-Type': 'application/x-www-form-urlencoded'}
-  )
-  print("This is Auth token: ", response.json()['access_token'])
-
-  return response.json()['access_token']
+    if not token_url:
+        raise ValueError("Token URL is required")
+    if not client_id:
+        raise ValueError("Client ID is required")
+    if not client_secret:
+        raise ValueError("Client Secret is required")
+        
+    response = requests.post(
+        token_url,
+        data="grant_type=client_credentials&client_id={client_id}&client_secret={client_secret}".format(client_id=client_id, client_secret=client_secret),
+        headers={'Content-Type': 'application/x-www-form-urlencoded'}
+    )
+    return response.json()['access_token']
 
 
 # Get Access Token
