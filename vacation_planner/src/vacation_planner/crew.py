@@ -5,15 +5,24 @@ from crewai.agents.agent_builder.base_agent import BaseAgent
 # you can use the @before_kickoff and @after_kickoff decorators
 # https://docs.crewai.com/concepts/crews#example-crew-class-with-decorators
 
-from crewai import LLM
+from crewai import LLM, CrewOutput
 
 from crewai_tools import SerperDevTool
 from vacation_planner.dynamo_tool import get_travel_packages
 import os
 
-# Integration with AgentCore
-from bedrock_agentcore.runtime import BedrockAgentCoreApp
+# Import libraries for Memory
+import boto3
+import uuid
+from datetime import datetime
 
+# Initialize the memory client
+memory_client = boto3.client("bedrock-agentcore", region_name="us-west-2")
+
+
+
+# Integration with AgentCore
+from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
 
 bedrock_agentcore_app = BedrockAgentCoreApp()
 
@@ -90,6 +99,57 @@ class VacationPlanner():
             # process=Process.hierarchical, # In case you wanna use that instead https://docs.crewai.com/how-to/Hierarchical/
         )
 
+def get_memory(context : RequestContext) -> list[dict]: 
+    ''' Get the memory based from the session_id in the context '''
+    session_id = getattr(context, "session_id", 'default_session')
+    print(f"******************Getting memory for session_id: {session_id}")
+    previous_events = memory_client.list_events(
+        memoryId = 'vacation_planner_memory-g4IW0FHl3l',
+        actorId = 'user', # this should be the user id but this app doesn't have a user id
+        sessionId = session_id,
+        maxResults= 3
+    )
+    events = previous_events.get('events', [])
+    # We need to extract the information and return it in this format because that's what crewai expects.
+    formatted_conversations = []
+    for event in events:
+        formatted_event = {}
+        for key, value in event.items():
+            if isinstance(value, datetime):
+                formatted_event[key] = value.isoformat()
+            else:
+                formatted_event[key] = value
+        formatted_conversations.append(formatted_event)
+    return formatted_conversations
+
+def store_memory(context : RequestContext, inputs : str, result: CrewOutput):
+    ''' Store the memory based from the session_id in the context '''
+    session_id = getattr(context, "session_id", 'default_session')
+    print(f"******************Storing memory for session_id: {session_id}")
+    print(f"Inputs: {inputs}")
+    memory_client.create_event(
+        memoryId = 'vacation_planner_memory-g4IW0FHl3l',
+        actorId = 'user', # this should be the user id but this app doesn't have a user id
+        sessionId = session_id,
+        eventTimestamp = datetime.now().isoformat(),
+        payload = [
+            {
+                "conversational": {
+                    "content": {"text": inputs},
+                    "role": "USER"
+                },
+            },
+            {
+                "conversational": {
+                    "content": {"text": result.raw},
+                    "role": "ASSISTANT"
+                }
+            }
+        ],
+        clientToken = str(uuid.uuid4())
+    )
+
+
 # Entry point for AgentCore
 # This function to be executed by the agentcore runtime on an event (prompt) & Creates WebServer Endpoints.
 @bedrock_agentcore_app.entrypoint
@@ -101,13 +161,21 @@ def crewai_bedrock(payload, context):
         """
         topic = payload.get("topic")
         current_year = payload.get("current_year")
+        # Get the memory based from the session_id in the context
+        formatted_conversations = get_memory(context)
+
         inputs = {
             "topic": topic,
-            "current_year": current_year
+            "current_year": current_year,
+            "formatted_conversations": formatted_conversations
         }
+        
 
         # Run the VacationPlanner crew agent with the user inputs.
         result = VacationPlanner().crew().kickoff(inputs=inputs)
+
+        # Store the memory
+        store_memory(context, inputs["topic"], result)
 
         # Return the result
         return result.raw

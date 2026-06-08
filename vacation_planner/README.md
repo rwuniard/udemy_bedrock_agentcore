@@ -343,6 +343,42 @@ AWS_PROFILE=rwuniard ./deploy_agentcore.sh
 - Use a **new session ID** per test — old sessions may keep a previous container version
 - Invoke via `./test_agent.sh` (local), AgentCore test, API Gateway, or [`streamlit_api.py`](streamlit_api.py)
 
+### AgentCore memory note
+
+[`crew.py`](src/vacation_planner/crew.py) includes an experimental AgentCore Memory integration:
+
+- `get_memory()` calls `bedrock-agentcore:ListEvents` for the hardcoded memory ID `vacation_planner_memory-g4IW0FHl3l`
+- `store_memory()` calls `bedrock-agentcore:CreateEvent` after each crew run
+- The runtime execution role must allow both actions on the memory ARN, or the crew returns an `AccessDeniedException`
+
+Adding memory requires an extra IAM step. Deploying the AgentCore runtime does not automatically grant the runtime execution role access to AgentCore Memory. Attach an inline policy like this to the role shown in the `AccessDeniedException` message:
+
+```bash
+aws iam put-role-policy \
+  --profile rwuniard \
+  --role-name AmazonBedrockAgentCoreRuntimeDefaultServiceRole-ijmzb \
+  --policy-name VacationPlannerAgentCoreMemoryAccess \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "bedrock-agentcore:ListEvents",
+          "bedrock-agentcore:CreateEvent"
+        ],
+        "Resource": "arn:aws:bedrock-agentcore:us-west-2:850652371396:memory/vacation_planner_memory-g4IW0FHl3l"
+      }
+    ]
+  }'
+```
+
+This proves the app can call the AgentCore Memory API and persist conversation events, but it does **not** currently prove useful recall. The stored events are passed into the crew input as `formatted_conversations`, but the task prompts in [`tasks.yaml`](src/vacation_planner/config/tasks.yaml) do not reference `{formatted_conversations}` or instruct either agent to reuse prior plans. In practice, memory may appear to be stored successfully while the next itinerary is generated as if there were no previous plan.
+
+This memory implementation only runs through the AgentCore entry point in `crew.py`. If you run the project with `crewai run`, `main.py`, or the local [`streamlitui.py`](streamlitui.py), the AgentCore request context is not used and `get_memory()` / `store_memory()` are not called.
+
+Treat this memory path as incomplete/demo code until recall is verified end-to-end. A proper fix would include adding the prior conversation summary to the relevant task prompt, validating the shape returned by `list_events()`, and testing with the same AgentCore session ID across multiple invocations.
+
 ### Deploy troubleshooting
 
 | Error | Cause | Fix |
