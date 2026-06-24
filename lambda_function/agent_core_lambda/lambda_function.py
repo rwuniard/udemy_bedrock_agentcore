@@ -18,6 +18,7 @@ def _sampled_trace_id() -> str:
 def lambda_handler(event, context):
     client = boto3.client("bedrock-agentcore", region_name="us-west-2")
 
+    # Get the user input from the event, default to Tokyo if not provided.
     user_input = event.get("prompt", "Tokyo")
     payload = json.dumps({"topic": user_input})
 

@@ -166,7 +166,7 @@ def crewai_bedrock(payload, context):
 
         inputs = {
             "topic": topic,
-            "current_year": current_year,
+            "current_year": current_year,so 
             "formatted_conversations": formatted_conversations
         }
         
